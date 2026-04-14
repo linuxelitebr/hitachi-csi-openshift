@@ -45,6 +45,41 @@ oc debug node/<node> -- chroot /host cat /sys/module/scsi_mod/parameters/max_lun
 
 Note: `scsi_mod` is built into the RHCOS kernel, so it does not appear in `lsmod`, but the parameter still works via kernel arguments.
 
+## How to find LUN-related parameters for any module
+
+If your hardware uses a driver not listed above, you can discover its parameters yourself:
+
+```bash
+# Step 1: Identify which SCSI/FC modules are loaded
+oc debug node/<node> -- chroot /host bash -c 'lsmod | grep -iE "scsi|fc|iscsi|lpfc|qla|qed|bnx2|mpt|hpsa|mega"'
+
+# Step 2: Check if a module has a LUN-related parameter
+oc debug node/<node> -- chroot /host bash -c 'modinfo <module_name> | grep -i lun'
+
+# Step 3: List all parameters of a module
+oc debug node/<node> -- chroot /host bash -c 'modinfo <module_name> | grep ^parm:'
+
+# Step 4: Check the current value of a specific parameter
+oc debug node/<node> -- chroot /host cat /sys/module/<module_name>/parameters/<param_name>
+
+# Step 5: List all parameters and their current values at once
+oc debug node/<node> -- chroot /host bash -c '
+  for p in /sys/module/<module_name>/parameters/*; do
+    echo "$(basename $p) = $(cat $p 2>/dev/null || echo N/A)"
+  done
+'
+```
+
+For example, if you have an HPE server with the `hpsa` driver and want to check if it has a LUN limit:
+
+```bash
+oc debug node/<node> -- chroot /host bash -c 'modinfo hpsa | grep -i lun'
+```
+
+If no LUN parameter appears, the driver does not impose its own limit and `scsi_mod.max_luns` is the only one that matters.
+
+The general rule: `modinfo <module> | grep -i lun` tells you if the driver has its own limit. If it does, `cat /sys/module/<module>/parameters/<param>` shows the current value.
+
 ## Do you actually need driver-specific LUN boost?
 
 In many cases, `scsi_mod.max_luns` alone is enough:
