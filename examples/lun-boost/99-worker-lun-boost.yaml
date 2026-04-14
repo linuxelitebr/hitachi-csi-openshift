@@ -1,0 +1,27 @@
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-worker-lun-boost
+  labels:
+    machineconfiguration.openshift.io/role: worker
+spec:
+  kernelArguments:
+    - "scsi_mod.max_luns=2048"
+    - "lpfc.lpfc_max_luns=2048"
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /etc/modprobe.d/lpfc.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            # options lpfc lpfc_max_luns=2048
+            source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBscGZjIGxwZmNfbWF4X2x1bnM9MjA0OA=="
+        - path: /etc/modprobe.d/scsi_mod.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            # options scsi_mod max_luns=2048
+            source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBzY3NpX21vZCBtYXhfbHVucz0yMDQ4"

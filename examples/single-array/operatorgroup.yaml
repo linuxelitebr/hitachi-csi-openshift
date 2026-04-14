@@ -1,0 +1,9 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: storage-hitachi-og
+  namespace: storage-hitachi
+spec:
+  targetNamespaces:
+    - storage-hitachi
+  upgradeStrategy: Default

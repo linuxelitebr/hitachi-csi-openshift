@@ -1,0 +1,23 @@
+# To generate the base64 content from your multipath.conf:
+#   cat multipath.conf | base64 -w0
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-worker-multipath
+  labels:
+    machineconfiguration.openshift.io/role: worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - name: multipathd.service
+          enabled: true
+    storage:
+      files:
+        - path: /etc/multipath.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,ZGVmYXVsdHMgewogICAgbm9fcGF0aF9yZXRyeSAxMAogICAgZmluZF9tdWx0aXBhdGhzIHllcwogICAgdXNlcl9mcmllbmRseV9uYW1lcyB5ZXMKfQpkZXZpY2VzIHsKICAgIGRldmljZSB7CiAgICAgICAgdmVuZG9yICAgICAgICAgICAgICAgICAgIkhJVEFDSEkiCiAgICAgICAgcHJvZHVjdCAgICAgICAgICAgICAgICAgIk9QRU4tLioiCiAgICAgICAgcGF0aF9ncm91cGluZ19wb2xpY3kgICAgbXVsdGlidXMKICAgICAgICBwYXRoX2NoZWNrZXIgICAgICAgICAgICB0dXIKICAgICAgICBoYXJkd2FyZV9oYW5kbGVyICAgICAgICAiMCIKICAgICAgICBwYXRoX3NlbGVjdG9yICAgICAgICAgICAicm91bmQtcm9iaW4gMCIKICAgICAgICBmYWlsYmFjayAgICAgICAgICAgICAgICBpbW1lZGlhdGUKICAgICAgICBycl93ZWlnaHQgICAgICAgICAgICAgICAgcHJpb3JpdGllcwogICAgfQp9Cg=="

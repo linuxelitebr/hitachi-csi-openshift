@@ -1,0 +1,10 @@
+apiVersion: csi.hitachi.com/v1
+kind: HSPC
+metadata:
+  name: hspc
+  namespace: storage-hitachi
+spec:
+  controller: {}
+  csiDriver:
+    enable: true
+  node: {}
