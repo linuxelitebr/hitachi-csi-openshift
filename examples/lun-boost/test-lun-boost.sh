@@ -24,7 +24,9 @@ STORAGECLASS=${2:-""}
 NAMESPACE="lun-boost-test"
 PVC_SIZE="1Gi"
 BATCH_SIZE=20
-WAIT_TIMEOUT=600
+WAIT_TIMEOUT=1800          # 30 min total wait
+STALL_THRESHOLD=180        # 3 min without progress before considering stalled
+STORAGE_API_GRACE=300      # 5 min extra grace after stall (storage API timeouts)
 
 echo "============================================"
 echo "LUN Boost Validation Test"
@@ -100,23 +102,59 @@ echo ""
 echo "All $COUNT PVCs submitted. Waiting for binding..."
 echo ""
 
-# Wait for PVCs to bind
+# Wait for PVCs to bind (resilient to storage API timeouts)
+# The Hitachi storage REST API can time out under load. We track progress
+# rather than wall-clock time: as long as PVCs keep binding, keep waiting.
 ELAPSED=0
 INTERVAL=15
+LAST_BOUND=0
+STALLED_FOR=0
+GRACE_GIVEN=false
+
 while [ $ELAPSED -lt $WAIT_TIMEOUT ]; do
     BOUND=$(oc get pvc -n $NAMESPACE --no-headers 2>/dev/null | grep -c Bound || true)
     PENDING=$(oc get pvc -n $NAMESPACE --no-headers 2>/dev/null | grep -c Pending || true)
     FAILED_PVC=$(oc get pvc -n $NAMESPACE --no-headers 2>/dev/null | grep -cv 'Bound\|Pending' || true)
 
-    echo "  Bound: $BOUND / $COUNT | Pending: $PENDING | Other: $FAILED_PVC | Elapsed: ${ELAPSED}s"
+    # Track progress
+    if [ "$BOUND" -gt "$LAST_BOUND" ]; then
+        PROGRESS="+$((BOUND - LAST_BOUND))"
+        STALLED_FOR=0
+        LAST_BOUND=$BOUND
+    else
+        PROGRESS="stalled ${STALLED_FOR}s"
+        STALLED_FOR=$((STALLED_FOR + INTERVAL))
+    fi
 
+    echo "  Bound: $BOUND / $COUNT | Pending: $PENDING | Other: $FAILED_PVC | Elapsed: ${ELAPSED}s | Progress: $PROGRESS"
+
+    # Success
     if [ "$BOUND" -eq "$COUNT" ]; then
         break
     fi
 
+    # All PVCs have an outcome (none pending, none bound = all failed)
     if [ "$PENDING" -eq 0 ] && [ "$BOUND" -lt "$COUNT" ]; then
-        echo "WARNING: No PVCs pending but not all bound. Some may have failed."
+        echo "  No PVCs pending and not all bound. Checking for actual failures..."
         break
+    fi
+
+    # Stalled: no progress for STALL_THRESHOLD seconds
+    # Give a one-time extra grace period because storage API timeouts can
+    # cause temporary provisioning freezes that recover on their own.
+    if [ "$STALLED_FOR" -ge "$STALL_THRESHOLD" ]; then
+        if [ "$GRACE_GIVEN" = false ]; then
+            echo "  No progress for ${STALL_THRESHOLD}s. Checking events for transient errors..."
+            oc get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>/dev/null | \
+                grep -iE 'timeout|retry|failed|error' | tail -5 || true
+            echo "  Granting ${STORAGE_API_GRACE}s grace period for storage API to recover..."
+            GRACE_GIVEN=true
+            STALLED_FOR=0
+            STALL_THRESHOLD=$STORAGE_API_GRACE
+        else
+            echo "  Still stalled after grace period. Provisioning appears stuck."
+            break
+        fi
     fi
 
     sleep $INTERVAL
