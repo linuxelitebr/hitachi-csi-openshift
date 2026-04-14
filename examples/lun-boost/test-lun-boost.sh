@@ -10,15 +10,16 @@
 #
 # Usage:
 #   ./test-lun-boost.sh [--node NODE] [--count N] [--sc STORAGECLASS]
-#                       [--size SIZE] [--no-write]
+#                       [--size SIZE] [--no-write] [--cleanup]
 #
 # Examples:
 #   ./test-lun-boost.sh --count 260 --sc sc-hitachi-vsp5044
 #   ./test-lun-boost.sh --count 50 --node worker-0
 #   ./test-lun-boost.sh --count 260 --no-write          # skip write+verify
+#   ./test-lun-boost.sh --count 260 --cleanup           # delete namespace at the end
 #   ./test-lun-boost.sh                                 # defaults: 260, default SC
 #
-# Cleanup:
+# Manual cleanup:
 #   oc delete namespace lun-boost-test
 # =============================================================================
 
@@ -35,6 +36,7 @@ WAIT_TIMEOUT=7200          # 2h total wait (Hitachi API can be slow under load)
 STALL_THRESHOLD=300        # 5 min without progress before considering stalled
 STORAGE_API_GRACE=900      # 15 min extra grace after stall
 DO_WRITE_VERIFY=true
+DO_CLEANUP=false
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --node)   NODE="$2"; shift 2 ;;
         --size)   PVC_SIZE="$2"; shift 2 ;;
         --no-write) DO_WRITE_VERIFY=false; shift ;;
+        --cleanup) DO_CLEANUP=true; shift ;;
         -h|--help)
             grep '^#' "$0" | head -30
             exit 0
@@ -64,6 +67,7 @@ echo "StorageClass:    ${STORAGECLASS:-"(cluster default)"}"
 echo "Target node:     ${NODE:-"(scheduler decides)"}"
 echo "PVC size:        $PVC_SIZE"
 echo "Write + verify:  $DO_WRITE_VERIFY"
+echo "Cleanup at end:  $DO_CLEANUP"
 echo "Namespace:       $NAMESPACE"
 echo "============================================"
 echo ""
@@ -413,6 +417,16 @@ fi
 
 echo "============================================"
 echo ""
-echo "Cleanup when done:"
-echo "  oc delete namespace $NAMESPACE"
-echo ""
+
+if [ "$DO_CLEANUP" = true ]; then
+    echo "Cleaning up namespace $NAMESPACE (--cleanup was set)..."
+    oc delete namespace $NAMESPACE --wait=false >/dev/null 2>&1
+    echo "Namespace deletion initiated. Resources will be removed asynchronously."
+    echo ""
+else
+    echo "Cleanup when done:"
+    echo "  oc delete namespace $NAMESPACE"
+    echo ""
+    echo "(Or re-run with --cleanup to delete the namespace automatically.)"
+    echo ""
+fi
