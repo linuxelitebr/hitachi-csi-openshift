@@ -1,3 +1,11 @@
+# LUN Boost MachineConfig - Worker nodes
+#
+# This example includes modprobe files for all common FC drivers (lpfc, qla2xxx).
+# Files for drivers that are not loaded on a given node are simply ignored.
+# Only scsi_mod is set as a kernel argument because it is always present.
+#
+# If you know your exact hardware, you can remove the files for drivers you
+# don't use. See docs/06-lun-boost.md for driver-specific examples.
 apiVersion: machineconfiguration.openshift.io/v1
 kind: MachineConfig
 metadata:
@@ -7,21 +15,26 @@ metadata:
 spec:
   kernelArguments:
     - "scsi_mod.max_luns=2048"
-    - "lpfc.lpfc_max_luns=2048"
   config:
     ignition:
       version: 3.2.0
     storage:
       files:
-        - path: /etc/modprobe.d/lpfc.conf
-          mode: 0644
-          overwrite: true
-          contents:
-            # options lpfc lpfc_max_luns=2048
-            source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBscGZjIGxwZmNfbWF4X2x1bnM9MjA0OA=="
         - path: /etc/modprobe.d/scsi_mod.conf
           mode: 0644
           overwrite: true
           contents:
             # options scsi_mod max_luns=2048
             source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBzY3NpX21vZCBtYXhfbHVucz0yMDQ4"
+        - path: /etc/modprobe.d/lpfc.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            # options lpfc lpfc_max_luns=2048
+            source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBscGZjIGxwZmNfbWF4X2x1bnM9MjA0OA=="
+        - path: /etc/modprobe.d/qla2xxx.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            # options qla2xxx ql2xmaxlun=2048
+            source: "data:text/plain;charset=utf-8;base64,b3B0aW9ucyBxbGEyeHh4IHFsMnhtYXhsdW49MjA0OA=="
