@@ -31,9 +31,9 @@ NODE=""
 PVC_SIZE="1Gi"
 NAMESPACE="lun-boost-test"
 BATCH_SIZE=20
-WAIT_TIMEOUT=1800
-STALL_THRESHOLD=180
-STORAGE_API_GRACE=300
+WAIT_TIMEOUT=7200          # 2h total wait (Hitachi API can be slow under load)
+STALL_THRESHOLD=300        # 5 min without progress before considering stalled
+STORAGE_API_GRACE=900      # 15 min extra grace after stall
 DO_WRITE_VERIFY=true
 
 # Parse args
