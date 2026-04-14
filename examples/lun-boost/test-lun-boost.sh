@@ -216,6 +216,15 @@ WROTE=0
 VERIFIED=0
 
 if [ "$DO_WRITE_VERIFY" = true ] && [ "$BOUND" -gt 0 ]; then
+    # Clean up any verifier pods from a previous run. Pod specs are mostly
+    # immutable, so re-running with a different --node would fail because
+    # oc apply cannot change nodeSelector on an existing pod.
+    EXISTING_VERIFIERS=$(oc get pods -n $NAMESPACE --no-headers 2>/dev/null | awk '/^verifier-/ {print $1}')
+    if [ -n "$EXISTING_VERIFIERS" ]; then
+        echo "Cleaning up verifier pods from previous run..."
+        echo "$EXISTING_VERIFIERS" | xargs -r oc delete pod -n $NAMESPACE --wait=true --grace-period=10 >/dev/null 2>&1 || true
+    fi
+
     BOUND_PVCS=$(oc get pvc -n $NAMESPACE --no-headers 2>/dev/null | awk '/Bound/ {print $1}' | sort)
     CHUNK_SIZE=50
     POD_IDX=0
