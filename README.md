@@ -25,6 +25,7 @@ Platform engineers and storage administrators working with:
 | [Validation](docs/07-validation.md) | PVC functional tests, FC diagnostics |
 | [HyperShift Hosted Clusters](docs/08-hypershift.md) | ConfigMap + NodePool pattern for hosted clusters |
 | [Troubleshooting](docs/09-troubleshooting.md) | Common errors and how to fix them |
+| [Tuning and Customization](docs/10-tuning-customization.md) | What the HSPC CR can and cannot override (CPU/memory, sidecar timeout/retry), measured |
 | [Examples](examples/) | Complete configuration examples |
 
 ## Quick reference

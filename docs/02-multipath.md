@@ -56,6 +56,36 @@ What each setting does:
 | `find_multipaths` | `yes` | Only create multipath devices when multiple paths exist |
 | `user_friendly_names` | `yes` | Use friendly device names (mpath*) |
 
+### A note on Hitachi's published values
+
+Hitachi's VSP device mapper multipath guide writes the `HITACHI`/`OPEN-*` device block a little
+more explicitly: it adds `features "0"` and `prio "const"`, and uses `rr_weight uniform`. Those
+are compatible with the file above. This config omits `features`/`prio` (inheriting the built-in,
+which resolves to `const` and no handler on a symmetric array) and uses `rr_weight priorities`,
+which is equivalent to uniform when every path has equal priority. Either form is fine on a
+symmetric active-active VSP. Set them explicitly if you want a verbatim match to Hitachi's guide.
+
+### What not to add (and why)
+
+It is tempting to "enhance" this file. Most extra options either do nothing on a current RHCOS or
+make things worse. These are the ones I have seen bite people:
+
+| Do not set | What goes wrong |
+|------------|-----------------|
+| `features "1 queue_if_no_path"` | It overrides `no_path_retry 10` and queues I/O **forever** when all paths are down, so a pod hangs instead of failing and recovering. Keep `features "0"` and let `no_path_retry` manage queueing. |
+| `prio "alua"` (+ `detect_prio yes`) | VSP in this mode is symmetric active-active, not ALUA. Telling multipath to expect ALUA priority states the array does not present is wrong. If `multipath -ll` shows all paths in one active group, you want `prio const`. |
+| `find_multipaths "smart"` | `smart` deliberately holds back creating the map for a new device while it waits for a second path. On a freshly mapped CSI LUN that adds detection latency at the worst moment. Use `yes`. |
+| `rr_min_io <n>` | Superseded by `rr_min_io_rq` on request-based multipath (current kernels). The old key is dead. |
+| `disable_changed_wwids "ignore"` | Deprecated, and `ignore` is not a valid value. Drop it. |
+| `marginal_pathgroups "yes"` | Inert unless you also set the `marginal_path_err_*` and `marginal_path_double_failed_time` timers, and it is worth validating with Hitachi before turning on. |
+
+Before changing anything, diff your file against the effective built-in for your exact RHCOS
+version, which Red Hat and Hitachi co-maintain:
+
+```bash
+oc debug node/<node> -- chroot /host multipathd show config | sed -n '/HITACHI/,/}/p'
+```
+
 ## Applying on OpenShift
 
 Multipath is deployed via MachineConfig, which enables the `multipathd.service` and writes `/etc/multipath.conf` on all nodes.

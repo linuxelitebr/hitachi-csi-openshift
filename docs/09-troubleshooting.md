@@ -67,6 +67,41 @@ The error "failed to find the target device" indicates infrastructure-level issu
 4. **Virtual ID (VSM environments)**
    When using Virtual Storage Machines, the Virtual ID attribute must be defined on the storage side. Missing Virtual ID causes the CSI driver to fail to locate the storage pool.
 
+### When the infrastructure is healthy and it still happens
+
+If multipathd is running, FC zoning is correct, permissions are fine, and you still get
+`0x0000c008`, look at the pattern instead of the message. `code = Aborted` is a retryable
+code: the kubelet retries MountDevice on its own (the event shows "N times in the last M
+minutes"), and the pod usually reaches Running once a later retry lands. That self-healing is
+the tell, and it points away from a broken SAN.
+
+Run `multipath -ll` on the affected node **at the time of the failure**:
+
+- All paths online, and `multipath -ll` returns **instantly** → the device is present and
+  multipathd is responsive. The driver could not see a device that is right there. This is the
+  node driver's device-detection window, not a multipath or path problem.
+- `multipath -ll` **hangs or lags** → multipathd is backlogged, a uevent/rescan storm. Check
+  multipathd CPU and `journalctl -u multipathd`, and whether the failures cluster with bursts
+  (a node reboot, or many PVCs attaching at once).
+
+For the healthy-infrastructure case, the artifact that pins the cause is the node driver's own
+log on that node. It records which device it was waiting for and why it gave up:
+
+```bash
+# find the hspc-csi-node pod on the failing node, then:
+oc logs -n storage-hitachi <hspc-csi-node-pod> -c hspc-csi-driver --timestamps \
+  | grep -iE 'c008|detect|device|stage|aborted'
+```
+
+Hitachi's own note for `0x0000c008` treats it as a one-time event right after the initial FC
+setup and tells you to delete the pod and reboot the host. That does not match an error that
+recurs and clears on its own without a reboot. A recurring, self-healing case with healthy
+paths is the node driver's detection timeout being shorter than this array's device-assembly
+latency. That is a driver matter to raise with Hitachi (ask them to expose or extend the
+NodeStage device-detection timeout); `multipath.conf` tuning does not fix it. The one multipath
+setting worth ruling out first is `find_multipaths`: `smart` adds a deliberate hold before a
+new device becomes a multipath map, so confirm you are on `yes` (see the multipath chapter).
+
 ## Permission denied (rados error -13)
 
 This error is specific to Ceph and indicates wrong credentials. If you see this on a Hitachi setup, you are likely hitting a different storage backend by mistake. Check which StorageClass the PVC is using:
