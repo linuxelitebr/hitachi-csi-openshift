@@ -69,38 +69,65 @@ The error "failed to find the target device" indicates infrastructure-level issu
 
 ### When the infrastructure is healthy and it still happens
 
-If multipathd is running, FC zoning is correct, permissions are fine, and you still get
-`0x0000c008`, look at the pattern instead of the message. `code = Aborted` is a retryable
-code: the kubelet retries MountDevice on its own (the event shows "N times in the last M
-minutes"), and the pod usually reaches Running once a later retry lands. That self-healing is
-the tell, and it points away from a broken SAN.
+Treat this as a way to find the cause, not a verdict. Several different problems produce the same
+`Aborted ... 0x0000c008` message, so the goal is to tell them apart in your environment before
+you act.
 
-Run `multipath -ll` on the affected node **at the time of the failure**:
+Start with the pattern. `code = Aborted` is a retryable code: the kubelet retries MountDevice on
+its own (the event shows "N times in the last M minutes"), and the pod usually reaches Running
+once a later retry lands. The fact that it heals on its own means the LUN does become usable, so
+a permanently broken SAN is unlikely. Now narrow it down.
 
-- All paths online, and `multipath -ll` returns **instantly** → the device is present and
-  multipathd is responsive. The driver could not see a device that is right there. This is the
-  node driver's device-detection window, not a multipath or path problem.
-- `multipath -ll` **hangs or lags** → multipathd is backlogged, a uevent/rescan storm. Check
-  multipathd CPU and `journalctl -u multipathd`, and whether the failures cluster with bursts
-  (a node reboot, or many PVCs attaching at once).
+**Step 1, multipathd health.** Run `multipath -ll` on the affected node while the pod is failing.
 
-For the healthy-infrastructure case, the artifact that pins the cause is the node driver's own
-log on that node. It records which device it was waiting for and why it gave up:
+- It **hangs or returns slowly**: multipathd is backlogged, a uevent or rescan storm. Check its
+  CPU and `journalctl -u multipathd`, and whether the failures cluster with bursts (a node
+  reboot, or many PVCs attaching at once). The problem is in the multipath layer.
+- It **returns instantly with all paths online**: the device is present and multipathd is
+  responsive. The problem is above multipath. Go to step 2.
+
+**Step 2, is the device really in the kernel?** Still at the moment of failure, on that node:
 
 ```bash
-# find the hspc-csi-node pod on the failing node, then:
+lsscsi | grep -i hitachi
+ls -l /dev/disk/by-id/ | grep -i <ldev-serial>
+multipath -ll <wwid>
+```
+
+If the multipath device, its paths, and the `by-id` symlink are all there, the block device
+exists and is healthy. The driver could not consume a device that is present, which is a
+driver-side timing problem, not a SAN one.
+
+**Step 3, read the driver's own log.** This is the artifact that tells the driver-side causes
+apart. The `hspc-csi-node` pod on the failing node records which device it was waiting for and
+why it gave up:
+
+```bash
 oc logs -n storage-hitachi <hspc-csi-node-pod> -c hspc-csi-driver --timestamps \
   | grep -iE 'c008|detect|device|stage|aborted'
 ```
 
+Use this table to place your case:
+
+| What you observe at failure | Points to |
+|---|---|
+| `multipath -ll` slow, multipathd busy, failures in bursts | a multipathd storm (multipath layer) |
+| A path `faulty`/`failed`, or it only hits one node or HBA | a bad FC path or zoning (SAN layer) |
+| Paths online, `multipath -ll` instant, device in `/dev/mapper` and `by-id` | driver-side detection (see below) |
+
+If you land in the driver-side row, the cause is one of a few timing problems, and the driver log
+is what tells them apart: a udev/`by-id` symlink that lags the multipath map, a wait that ends
+before all expected paths are assembled, stale device state from a previous mapping, or a
+detection window shorter than this array's assembly latency. `multipath.conf` tuning does not fix
+any of these, with one thing worth ruling out first: `find_multipaths "smart"` adds a deliberate
+hold before a new device becomes a map, so confirm you are on `yes` (see the multipath chapter).
+
 Hitachi's own note for `0x0000c008` treats it as a one-time event right after the initial FC
-setup and tells you to delete the pod and reboot the host. That does not match an error that
-recurs and clears on its own without a reboot. A recurring, self-healing case with healthy
-paths is the node driver's detection timeout being shorter than this array's device-assembly
-latency. That is a driver matter to raise with Hitachi (ask them to expose or extend the
-NodeStage device-detection timeout); `multipath.conf` tuning does not fix it. The one multipath
-setting worth ruling out first is `find_multipaths`: `smart` adds a deliberate hold before a
-new device becomes a multipath map, so confirm you are on `yes` (see the multipath chapter).
+setup and says to delete the pod and reboot the host. That does not match an error that recurs
+and clears on its own without a reboot. If that is your case, take it to Hitachi with the
+`hspc-csi-node` log from a real failure, which shows exactly what the driver was waiting for. That
+log is what turns "it looks like a detection timeout" into a specific, fixable finding, instead of
+a guess.
 
 ## Permission denied (rados error -13)
 

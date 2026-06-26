@@ -15,7 +15,14 @@
 #
 # A timestamped backup of the Deployment is taken before any change, and
 # the patch is verified both while the operator is down (authoritative) and
-# after it is scaled back (to detect a revert).
+# after it is scaled back (where it is polled for an operator revert).
+#
+# NOTE: with the operator running this change does NOT persist. The operator
+# re-templates the Deployment within ~30-60s of restarting and resets the
+# resources. The only ways to keep it are KEEP_MANAGER_DOWN=true (the whole
+# CSI stack then runs unreconciled) or a VerticalPodAutoscaler, which raises
+# requests at pod admission and survives the operator. See
+# docs/10-tuning-customization.md.
 #
 # Usage:
 #   ./hspc-csi-driver-resources-patch.sh
@@ -44,15 +51,33 @@ DRY_RUN="${DRY_RUN:-false}"
 KEEP_MANAGER_DOWN="${KEEP_MANAGER_DOWN:-false}"
 KUBECTL="${KUBECTL:-oc}"
 WAIT_ITERS="${WAIT_ITERS:-60}"
+REVERT_POLL_SECS="${REVERT_POLL_SECS:-120}"        # default mode: how long to watch for an operator revert
+REVERT_POLL_INTERVAL="${REVERT_POLL_INTERVAL:-5}"
 # ======================================================
 
 ts="$(date +%Y%m%d-%H%M%S)"
 backup="${BACKUP_DIR}/${TARGET_DEPLOY}-${ts}.yaml"
+orig_replicas=1
 
 log()  { printf '\n==> %s\n' "$*"; }
 err()  { printf '\nERROR: %s\n' "$*" >&2; }
 ok()   { printf '[ OK ] %s\n' "$*"; }
 fail() { printf '[FAIL] %s\n' "$*"; }
+
+# If we exit unexpectedly (error or signal) while the operator is scaled down,
+# restore it. Set NEED_OPERATOR_RESTORE=false once we have handled it (scaled
+# back, or intentionally leaving it down via KEEP_MANAGER_DOWN).
+NEED_OPERATOR_RESTORE=false
+cleanup() {
+  if [ "$NEED_OPERATOR_RESTORE" = "true" ]; then
+    NEED_OPERATOR_RESTORE=false
+    err "Unexpected exit with ${MANAGER_DEPLOY} scaled down. Restoring to ${orig_replicas} replicas..."
+    $KUBECTL -n "$MANAGER_NS" scale deployment "$MANAGER_DEPLOY" --replicas="$orig_replicas" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 read_resources() {
   $KUBECTL -n "$TARGET_NS" get deployment "$TARGET_DEPLOY" \
@@ -88,7 +113,8 @@ if verify; then
 fi
 
 if [ "$DRY_RUN" = "true" ]; then
-  log "DRY_RUN=true. Would: backup -> scale ${MANAGER_DEPLOY} to 0 -> wait -> patch ${TARGET_CONTAINER} -> ${KEEP_MANAGER_DOWN:+leave manager down}${KEEP_MANAGER_DOWN:-scale manager back} -> verify"
+  if [ "$KEEP_MANAGER_DOWN" = "true" ]; then after="leave manager down"; else after="scale manager back, then poll for a revert"; fi
+  log "DRY_RUN=true. Would: backup -> scale ${MANAGER_DEPLOY} to 0 -> wait -> patch ${TARGET_CONTAINER} -> ${after} -> verify"
   exit 0
 fi
 
@@ -100,6 +126,7 @@ orig_replicas="$($KUBECTL -n "$MANAGER_NS" get deployment "$MANAGER_DEPLOY" -o j
 orig_replicas="${orig_replicas:-1}"
 log "Scaling ${MANAGER_DEPLOY} from ${orig_replicas} to 0"
 $KUBECTL -n "$MANAGER_NS" scale deployment "$MANAGER_DEPLOY" --replicas=0
+NEED_OPERATOR_RESTORE=true
 
 log "Waiting for ${MANAGER_DEPLOY} pods to terminate..."
 for i in $(seq 1 "$WAIT_ITERS"); do
@@ -126,26 +153,41 @@ if verify; then ok "Patch applied: $(read_resources)"; else
 fi
 
 if [ "$KEEP_MANAGER_DOWN" = "true" ]; then
+  NEED_OPERATOR_RESTORE=false   # leaving it down is intentional here
   log "KEEP_MANAGER_DOWN=true: leaving ${MANAGER_DEPLOY} at 0 replicas"
-  err "NOTE: CSI reconcile is paused while the operator is down. Scale it
-       back when ready: oc -n ${MANAGER_NS} scale deployment ${MANAGER_DEPLOY} --replicas=${orig_replicas}"
+  err "NOTE: CSI reconcile is paused for the WHOLE stack (controller, node DaemonSet,
+       telemetry, RBAC) while the operator is down. Scale it back when ready:
+       oc -n ${MANAGER_NS} scale deployment ${MANAGER_DEPLOY} --replicas=${orig_replicas}"
   ok "Done (manager intentionally down). Backup: ${backup}"
   exit 0
 fi
 
 log "Scaling ${MANAGER_DEPLOY} back to ${orig_replicas}"
 $KUBECTL -n "$MANAGER_NS" scale deployment "$MANAGER_DEPLOY" --replicas="$orig_replicas"
+NEED_OPERATOR_RESTORE=false
 
-log "Waiting 20s, then re-check (does the operator revert?)"
-sleep 20
-if verify; then
-  ok "Resources still at target after operator restart. Patch is durable."
+log "Waiting for ${MANAGER_DEPLOY} to be Ready before checking for a revert..."
+$KUBECTL -n "$MANAGER_NS" rollout status deployment "$MANAGER_DEPLOY" --timeout=120s || true
+
+# The operator reverts the Deployment only after it boots and reconciles, which
+# takes ~30-60s and varies run to run, so a fixed wait misses it. Poll instead.
+log "Polling up to ${REVERT_POLL_SECS}s for an operator revert"
+reverted=false
+deadline=$(( $(date +%s) + REVERT_POLL_SECS ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if ! verify; then reverted=true; break; fi
+  sleep "$REVERT_POLL_INTERVAL"
+done
+
+if [ "$reverted" = "true" ]; then
+  fail "Operator REVERTED the patch: $(read_resources)"
+  err "With the operator running, this change does NOT persist. To keep it, either re-run
+       with KEEP_MANAGER_DOWN=true (the whole CSI stack then runs unreconciled), or use a
+       VerticalPodAutoscaler, which raises requests at pod admission and survives the
+       operator (see docs/10-tuning-customization.md). Backup: ${backup}"
+  exit 2
+else
+  ok "Resources still at target after ${REVERT_POLL_SECS}s with the operator running."
   ok "Done. Backup: ${backup}"
   exit 0
-else
-  fail "Operator REVERTED after scale-back: $(read_resources)"
-  err "The operator re-templates the Deployment on reconcile. Re-run with
-       KEEP_MANAGER_DOWN=true to hold the override, or pursue an
-       operator-supported mechanism. Backup: ${backup}"
-  exit 2
 fi
